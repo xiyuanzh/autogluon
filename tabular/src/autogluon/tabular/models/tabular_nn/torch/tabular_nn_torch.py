@@ -186,13 +186,7 @@ class TabularNeuralNetTorchModel(AbstractNeuralNetworkModel):
 
         processor_kwargs, optimizer_kwargs, fit_kwargs, loss_kwargs, params = self._prepare_params(params=params)
 
-        seed_value = params.pop("seed_value", 0)
-
         self._num_cpus_infer = params.pop("_num_cpus_infer", 1)
-        if seed_value is not None:  # Set seeds
-            random.seed(seed_value)
-            np.random.seed(seed_value)
-            torch.manual_seed(seed_value)
 
         if sample_weight is not None:  # TODO: support
             logger.log(15, f"sample_weight not yet supported for {self.__class__.__name__}," " this model will ignore them in training.")

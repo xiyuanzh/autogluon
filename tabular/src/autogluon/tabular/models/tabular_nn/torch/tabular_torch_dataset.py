@@ -247,10 +247,6 @@ class TabularTorchDataset(torch.utils.data.IterableDataset):
         def worker_init_fn(worker_id):
             if is_test:
                 worker_seed = torch.initial_seed() % 2**32
-                np.random.seed(worker_seed)
-                random.seed(worker_seed)
-            else:
-                np.random.seed(np.random.get_state()[1][0] + worker_id)
 
         self.batch_size = batch_size
         self.shuffle = False if is_test else True
