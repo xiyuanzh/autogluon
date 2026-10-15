@@ -18,11 +18,13 @@ class DeviceCheckpoint:
 
     def reset(self, model):
         self.best_loss = np.inf
+        self.best_epoch = 0
         self.best_model = {name: value.detach().clone() for name, value in model.state_dict().items()}
 
-    def __call__(self, model, loss):
+    def __call__(self, model, loss, epoch=0):
         if loss < self.best_loss:
             self.best_loss = loss
+            self.best_epoch = epoch
             with torch.no_grad():
                 for name, value in model.state_dict().items():
                     self.best_model[name].copy_(value)

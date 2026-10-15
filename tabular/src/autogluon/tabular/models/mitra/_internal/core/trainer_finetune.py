@@ -96,7 +96,16 @@ class TrainerFinetune(BaseEstimator):
         self.early_stopping = None
         self.metric = None
 
-    def train(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray):
+    def train(
+        self,
+        x_train: np.ndarray,
+        y_train: np.ndarray,
+        x_val: np.ndarray | None = None,
+        y_val: np.ndarray | None = None,
+    ):
+        if (x_val is None) != (y_val is None):
+            raise ValueError("x_val and y_val must either both be provided or both be None.")
+        use_validation = x_val is not None
         self.preprocessor.fit(x_train, y_train)
 
         x_train_transformed = self.preprocessor.transform_X(x_train)
@@ -114,12 +123,14 @@ class TrainerFinetune(BaseEstimator):
 
         self.checkpoint.reset(self.model)
 
-        metrics_valid = self.evaluate(x_train, y_train, x_val, y_val)
-        if self.verbose:
-            self.log_start_metrics(metrics_valid)
-        self.checkpoint(self.model, metrics_valid.loss)
+        if use_validation:
+            metrics_valid = self.evaluate(x_train, y_train, x_val, y_val)
+            if self.verbose:
+                self.log_start_metrics(metrics_valid)
+            self.checkpoint(self.model, metrics_valid.loss, epoch=0)
 
         start_time = time.time()
+        epoch = 0
 
         for epoch in range(1, self.cfg.hyperparams["max_epochs"] + 1):
             dataset_train = next(dataset_train_generator)
@@ -191,18 +202,37 @@ class TrainerFinetune(BaseEstimator):
                     prediction_metrics_tracker.update(y_hat, y_query, train=False)
 
             metrics_train = prediction_metrics_tracker.get_metrics()
-            metrics_valid = self.evaluate(x_train, y_train, x_val, y_val)
+            metrics_valid = self.evaluate(x_train, y_train, x_val, y_val) if use_validation else None
 
             if self.verbose:
-                self.log_metrics(epoch, metrics_train, metrics_valid)
+                if use_validation:
+                    self.log_metrics(epoch, metrics_train, metrics_valid)
+                elif self.cfg.task == Task.REGRESSION:
+                    logger.info(
+                        (
+                            f"Epoch {epoch:03d} "
+                            f"| Train MSE: {metrics_train.metrics[MetricName.MSE]:.4f} "
+                            f"| Train MAE: {metrics_train.metrics[MetricName.MAE]:.4f} "
+                            f"| Train r2: {metrics_train.metrics[MetricName.R2]:.4f}"
+                        )
+                    )
+                else:
+                    logger.info(
+                        (
+                            f"Epoch {epoch:03d} "
+                            f"| Train CE: {metrics_train.metrics[MetricName.LOG_LOSS]:.4f} "
+                            f"| Train acc: {metrics_train.metrics[MetricName.ACCURACY]:.4f}"
+                        )
+                    )
 
-            self.checkpoint(self.model, metrics_valid.loss)
+            if use_validation:
+                self.checkpoint(self.model, metrics_valid.loss, epoch=epoch)
 
-            self.early_stopping(metrics_valid.metrics[self.metric])
-            if self.early_stopping.we_should_stop():
-                if self.verbose:
-                    logger.info("Early stopping")
-                break
+                self.early_stopping(metrics_valid.metrics[self.metric])
+                if self.early_stopping.we_should_stop():
+                    if self.verbose:
+                        logger.info("Early stopping")
+                    break
 
             if (
                 self.cfg.hyperparams["budget"] is not None
@@ -215,9 +245,17 @@ class TrainerFinetune(BaseEstimator):
             if epoch < self.cfg.hyperparams["warmup_steps"]:
                 self.scheduler_warmup.step()
             else:
-                self.scheduler_reduce_on_plateau.step(metrics_valid.loss)
+                scheduler_loss = metrics_valid.loss if use_validation else metrics_train.loss
+                self.scheduler_reduce_on_plateau.step(scheduler_loss)
 
-        self.checkpoint.set_to_best(self.model)
+        if use_validation:
+            self.best_epoch = self.checkpoint.best_epoch
+            self.checkpoint.set_to_best(self.model)
+        else:
+            # refit_full has already selected the epoch count on the original
+            # validation data. Keep the final weights after exactly that many
+            # updates instead of creating another validation split.
+            self.best_epoch = epoch
 
     def evaluate(
         self, x_support: np.ndarray, y_support: np.ndarray, x_query: np.ndarray, y_query: np.ndarray

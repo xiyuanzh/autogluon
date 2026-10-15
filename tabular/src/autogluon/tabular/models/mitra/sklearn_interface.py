@@ -326,6 +326,8 @@ class MitraClassifier(MitraBase, ClassifierMixin):
                 if isinstance(y_val, pd.Series):
                     y_val = y_val.values
                 X_train, X_valid, y_train, y_valid = X, X_val, y, y_val
+            elif getattr(self, "use_full_data_for_fine_tune", False):
+                X_train, X_valid, y_train, y_valid = X, None, y, None
             else:
                 X_train, X_valid, y_train, y_valid = self._split_data(X, y)
 
@@ -464,6 +466,8 @@ class MitraRegressor(MitraBase, RegressorMixin):
                 if isinstance(y_val, pd.Series):
                     y_val = y_val.values
                 X_train, X_valid, y_train, y_valid = X, X_val, y, y_val
+            elif getattr(self, "use_full_data_for_fine_tune", False):
+                X_train, X_valid, y_train, y_valid = X, None, y, None
             else:
                 X_train, X_valid, y_train, y_valid = self._split_data(X, y)
 

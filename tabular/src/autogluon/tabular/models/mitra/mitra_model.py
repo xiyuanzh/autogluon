@@ -435,6 +435,18 @@ class MitraModel(AbstractTorchModel):
             if need_to_reset_torch_threads:
                 torch.set_num_threads(torch_threads_og)
 
+        best_epochs = [
+            int(trainer.best_epoch)
+            for trainer in model.trainers
+            if getattr(trainer, "best_epoch", None) is not None
+        ]
+        if best_epochs:
+            # BaggedEnsembleModel averages this integer across children when
+            # constructing the refit template. The _FULL model then trains on
+            # every available row for the selected number of updates.
+            self.params_trained["fine_tune_steps"] = round(sum(best_epochs) / len(best_epochs))
+        self.params_trained["use_full_data_for_fine_tune"] = True
+
         for i in range(len(model.trainers)):
             model.trainers[i].post_fit_optimize()
 

@@ -459,6 +459,110 @@ def test_fit_predict_save_load(checkpoint_factory, tmp_path, version, recipe, pr
     np.testing.assert_allclose(loaded.predict_proba(X.iloc[32:]), prediction, atol=1e-5)
 
 
+@pytest.mark.parametrize(
+    "problem_type,task,output,n_classes",
+    [
+        ("binary", "CLASSIFICATION", 10, 2),
+        ("regression", "REGRESSION", 7, 0),
+    ],
+)
+def test_refit_full_uses_selected_steps_without_validation(
+    checkpoint_factory,
+    tmp_path,
+    problem_type,
+    task,
+    output,
+    n_classes,
+):
+    path = checkpoint_factory(task=task, dim_output=output, version="2")
+    rng = np.random.RandomState(11)
+    X = pd.DataFrame(rng.normal(size=(32, 3)))
+    y = pd.Series(rng.normal(size=32) if n_classes == 0 else np.arange(32) % n_classes)
+    model = MitraModel(
+        path=str(tmp_path / f"original_{problem_type}"),
+        problem_type=problem_type,
+        hyperparameters={
+            "hf_model": path,
+            "fine_tune_steps": 2,
+            "verbose": False,
+            "ag.max_memory_usage_ratio": 10.0,
+        },
+    )
+    model.fit(X=X.iloc[:24], y=y.iloc[:24], X_val=X.iloc[24:], y_val=y.iloc[24:], num_cpus=1, num_gpus=0)
+    selected_steps = model.model.trainers[0].best_epoch
+    assert model.params_trained["fine_tune_steps"] == selected_steps
+    assert model.params_trained["use_full_data_for_fine_tune"] is True
+
+    refit = model.convert_to_refit_full_template()
+    refit_hyperparameters = refit.get_params()["hyperparameters"]
+    assert refit_hyperparameters["fine_tune_steps"] == selected_steps
+    assert refit_hyperparameters["use_full_data_for_fine_tune"] is True
+    refit.path = str(tmp_path / f"refit_{problem_type}")
+    from autogluon.tabular.models.mitra._internal.core.trainer_finetune_v2 import TrainerFinetuneV2
+
+    with mock.patch.object(
+        TrainerFinetuneV2,
+        "evaluate",
+        side_effect=AssertionError("refit_full must not evaluate a validation split"),
+    ):
+        refit.fit(X=X, y=y, num_cpus=1, num_gpus=0)
+
+    assert len(refit.model.X) == len(X)
+    assert refit.model.trainers[0].best_epoch == selected_steps
+
+
+def test_refit_full_hierarchy_uses_every_row_without_validation(checkpoint_factory):
+    from autogluon.tabular.models.mitra.finetune import MitraFinetuneClassifier
+
+    X = np.random.RandomState(12).normal(size=(44, 3))
+    y = np.tile(np.arange(11), 4)
+    estimator = MitraFinetuneClassifier(
+        hf_model=checkpoint_factory(version="2"),
+        model_version="2",
+        device="cpu",
+        fine_tune_steps=1,
+        use_full_data_for_fine_tune=True,
+        verbose=False,
+    )
+    estimator.fit(X, y)
+
+    for node in estimator.hierarchy_.nodes:
+        expected_rows = int(node.mask(y).sum())
+        assert len(node.estimator.X) == expected_rows
+        assert node.estimator.trainers[0].best_epoch == 1
+
+
+def test_bagged_refit_full_trains_one_child_on_all_rows(checkpoint_factory, tmp_path):
+    X = pd.DataFrame(np.random.RandomState(13).normal(size=(32, 3)))
+    y = pd.Series(np.arange(32) % 2)
+    bag = BaggedEnsembleModel(
+        model_base=MitraModel(
+            problem_type="binary",
+            hyperparameters={
+                "hf_model": checkpoint_factory(version="2"),
+                "fine_tune_steps": 1,
+                "verbose": False,
+                "ag.max_memory_usage_ratio": 10.0,
+            },
+        ),
+        path=str(tmp_path / "bag"),
+        hyperparameters={"fold_fitting_strategy": "sequential_local"},
+    )
+    bag.fit(X=X, y=y, k_fold=2, num_cpus=1, num_gpus=0)
+    selected_steps = round(
+        sum(bag.load_child(child).params_trained["fine_tune_steps"] for child in bag.models) / len(bag.models)
+    )
+
+    refit = bag.convert_to_refit_full_template()
+    refit.path = str(tmp_path / "bag_refit")
+    refit.fit(X=X, y=y, k_fold=1, _skip_oof=True, num_cpus=1, num_gpus=0)
+
+    assert len(refit.models) == 1
+    child = refit.load_child(refit.models[0])
+    assert len(child.model.X) == len(X)
+    assert child.model.trainers[0].best_epoch == selected_steps
+
+
 @pytest.mark.gpu
 @pytest.mark.parametrize(
     "problem_type,version,output", [("binary", "1", 10), ("regression", "1", 1), ("regression", "2", 7)]

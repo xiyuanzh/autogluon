@@ -52,8 +52,10 @@ class MitraFinetuneMixin:
         fine_tune_time_limit=None,
         model_version=DEFAULT_MODEL_VERSION,
         fine_tune_recipe=None,
+        use_full_data_for_fine_tune=False,
     ):
         self.model_version = validate_model_version(model_version)
+        self.use_full_data_for_fine_tune = bool(use_full_data_for_fine_tune)
         if fine_tune_recipe is None:
             fine_tune_recipe = DEFAULT_FINE_TUNE_RECIPE
         recipe = get_finetune_recipe(fine_tune_recipe)
@@ -128,6 +130,11 @@ class MitraFinetuneMixin:
             budget = (
                 min(time_limit, self.fine_tune_time_limit) if time_limit is not None else self.fine_tune_time_limit
             )
+        if self.use_full_data_for_fine_tune:
+            # AutoGluon refit_full is intentionally not bounded by the
+            # original fit budget. Complete the validation-selected number of
+            # updates even though each update now sees a larger data pool.
+            budget = None
         cfg.hyperparams.update(
             lr=lr,
             weight_decay=self.weight_decay,
@@ -217,15 +224,18 @@ class MitraFinetuneClassifier(MitraFinetuneMixin, MitraClassifier):
         y = y.astype(np.int64, copy=False)
         if getattr(self, "_fit_context_memo", None) is None:
             self._fit_context_memo = FitContextMemo()
-        internal_validation = X_val is None
+        internal_validation = X_val is None and not self.use_full_data_for_fine_tune
         if X_val is None:
-            _, counts = np.unique(y, return_counts=True)
-            if counts.min() < 2:
-                raise ValueError(
-                    "Many-class internal validation requires at least two rows per class. "
-                    "Provide X_val/y_val containing every training class or add more observations."
-                )
-            X_train, X_valid, y_train, y_valid = self._split_data(X, y)
+            if self.use_full_data_for_fine_tune:
+                X_train, y_train, X_valid, y_valid = X, y, None, None
+            else:
+                _, counts = np.unique(y, return_counts=True)
+                if counts.min() < 2:
+                    raise ValueError(
+                        "Many-class internal validation requires at least two rows per class. "
+                        "Provide X_val/y_val containing every training class or add more observations."
+                    )
+                X_train, X_valid, y_train, y_valid = self._split_data(X, y)
         else:
             X_train, y_train, X_valid, y_valid = X, y, np.asarray(X_val), np.asarray(y_val)
             if len(X_valid) != len(y_valid):
@@ -253,14 +263,18 @@ class MitraFinetuneClassifier(MitraFinetuneMixin, MitraClassifier):
             if remaining is not None and remaining <= 0:
                 raise TimeLimitExceeded
             train_mask = node.mask(y_train)
-            val_mask = node.mask(y_valid)
             train_labels = node.encode(y_train[train_mask])
-            val_labels = node.encode(y_valid[val_mask])
             expected_outputs = np.arange(len(node.groups))
             if not np.array_equal(np.unique(train_labels), expected_outputs):
                 raise ValueError("A hierarchy training node lost an output class.")
-            if not np.array_equal(np.unique(val_labels), expected_outputs):
-                raise ValueError("A hierarchy validation node lost an output class.")
+            if y_valid is None:
+                val_mask = None
+                val_labels = None
+            else:
+                val_mask = node.mask(y_valid)
+                val_labels = node.encode(y_valid[val_mask])
+                if not np.array_equal(np.unique(val_labels), expected_outputs):
+                    raise ValueError("A hierarchy validation node lost an output class.")
             params = self.get_params()
             params["seed"] = self.seed + i
             estimator = MitraFinetuneClassifier(**params)
@@ -269,7 +283,7 @@ class MitraFinetuneClassifier(MitraFinetuneMixin, MitraClassifier):
             estimator.fit(
                 X_train[train_mask],
                 train_labels,
-                X_val=X_valid[val_mask],
+                X_val=None if X_valid is None else X_valid[val_mask],
                 y_val=val_labels,
                 time_limit=None if remaining is None else remaining / (len(self.hierarchy_.nodes) - i),
             )
