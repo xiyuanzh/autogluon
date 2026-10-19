@@ -496,7 +496,7 @@ class MitraModel(AbstractTorchModel):
             recipe = DEFAULT_FINE_TUNE_RECIPE
         get_finetune_recipe(recipe)
         if recipe == "2":
-            params.update(max_rows=1_000_000, max_features=50_000, max_classes=None)
+            params.update(max_rows=100_000, max_features=2_000, max_classes=None)
         return params
 
     def reduce_memory_size(

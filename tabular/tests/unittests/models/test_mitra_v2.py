@@ -1588,20 +1588,23 @@ def test_fitted_context_is_shared_by_deep_copies_without_global_state():
 
 
 @pytest.mark.parametrize(
-    "recipes,expected_max_rows",
+    "recipes,expected_max_rows,expected_max_features",
     [
-        (("1",), 10_000),
-        (("1", "2"), 1_000_000),
+        (("1",), 10_000, 500),
+        (("2",), 100_000, 2_000),
+        (("1", "2"), 100_000, 2_000),
     ],
 )
-def test_recipe_search_space_uses_safe_auxiliary_constraints(recipes, expected_max_rows):
+def test_recipe_search_space_uses_safe_auxiliary_constraints(recipes, expected_max_rows, expected_max_features):
     from autogluon.common import space
 
     model = MitraModel(
         problem_type="binary",
         hyperparameters={"fine_tune_recipe": space.Categorical(*recipes)},
     )
-    assert model._get_default_auxiliary_params()["max_rows"] == expected_max_rows
+    auxiliary_params = model._get_default_auxiliary_params()
+    assert auxiliary_params["max_rows"] == expected_max_rows
+    assert auxiliary_params["max_features"] == expected_max_features
 
 
 def test_failed_fit_does_not_record_a_fitted_context():
